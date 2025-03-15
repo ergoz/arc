@@ -1,23 +1,37 @@
 #
-# Copyright (C) 2023 AuxXxilium <https://github.com/AuxXxilium>
+# Copyright (C) 2025 AuxXxilium <https://github.com/AuxXxilium>
 #
 # This is free software, licensed under the MIT License.
 # See /LICENSE for more information.
 #
 
-name: Build Arc
+name: Build Arc Image
 
 on:
   workflow_dispatch:
     inputs:
+      runs:
+        description: "runs-on"
+        type: choice
+        options:
+          - ubuntu-latest
+          - self-hosted
       version:
-        description: "version"
-        required: false
+        description: "version (1.0.0)"
+        required: true
         type: string
       notice:
         description: "Notice here"
         required: false
         type: string
+      evolution:
+        description: "evolution"
+        default: true
+        type: boolean
+      minimal:
+        description: "minimal"
+        default: false
+        type: boolean
       latest:
         description: "latest"
         default: true
@@ -30,97 +44,89 @@ on:
         description: "clean"
         default: false
         type: boolean
-      update_version:
-        description: "update min version"
-        default: "24.07.31"
-        type: string
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs }}
     steps:
       - name: Checkout
         uses: actions/checkout@main
 
-      - name: Clean Old
-        if: inputs.clean == true
-        uses: Nats-ji/delete-old-releases@v1
+      - name: Delete releases and workflows runs
+        if: ${{ inputs.clean }}
+        uses: ophub/delete-releases-workflows@main
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          keep-count: 10
-          keep-old-minor-releases: false
-
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
-        with:
-          swap-storage: false
+          delete_releases: true
+          releases_keep_latest: 1
+          delete_workflows: false
+          delete_tags: true
+          gh_token: ${{ secrets.BUILD_TOKEN }}
 
       # Install Dependencies
       - name: Install Dependencies
+        if: ${{ inputs.runs == 'ubuntu-latest' }}
         run: |
           git config --global user.email "info@auxxxilium.tech"
           git config --global user.name "AuxXxilium"
           sudo timedatectl set-timezone "Europe/Berlin"
 
           sudo apt update
-          sudo apt install -y jq gawk cpio gettext libelf-dev qemu-utils busybox dialog curl sed 
-          sudo snap install yq
+          sudo apt install -y locales busybox dialog gettext sed gawk jq curl
+          sudo apt install -y python-is-python3 python3-pip libelf-dev qemu-utils cpio xz-utils lz4 lzma bzip2 gzip zstd
+          # sudo snap install yq
+          if ! command -v yq &>/dev/null || ! yq --version 2>/dev/null | grep -q "v4."; then
+            sudo curl -kL https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -o /usr/bin/yq && sudo chmod a+x /usr/bin/yq
+          fi
 
           df -h
 
-      # calculates the version number and push
-      - name: Calculate Version
-        run: |
-          # Calculate Version
-          VERSION=""
-          if [ -n "${{ inputs.version }}" ]; then
-            VERSION="${{ inputs.version }}"
-          else
-            VERSION="`date +'%y.%m.%d'`"
-          fi
-          
-          echo "Version: ${VERSION}"
-          echo "VERSION=${VERSION}" >> $GITHUB_ENV
-
       # Get extractor, LKM, Addons, Modules, Theme and Configs
-      - name: Get extractor, LKM, Addons, Modules, Theme and Configs
+      - name: Get Dependencies for all Image
         run: |
-          . scripts/func.sh
+          . scripts/functions.sh "${{ secrets.BUILD_TOKEN }}"
 
-          getLKMs "files/p3/lkms"
-          echo "LKMTAG=${TAG}" >> $GITHUB_ENV
+          echo "Get Dependencies"
           getAddons "files/p3/addons"
-          echo "ADDONSTAG=${TAG}" >> $GITHUB_ENV
           getModules "files/p3/modules"
-          echo "MODULESTAG=${TAG}" >> $GITHUB_ENV
           getConfigs "files/p3/configs"
-          echo "CONFIGSTAG=${TAG}" >> $GITHUB_ENV
           getPatches "files/p3/patches"
-          echo "PATCHESTAG=${TAG}" >> $GITHUB_ENV
           getCustom "files/p3/custom"
-          echo "CUSTOMTAG=${TAG}" >> $GITHUB_ENV
-          getTheme "files/p1/boot/grub"
-          echo "THEMETAG=${TAG}" >> $GITHUB_ENV
-          getBuildrootx "latest" "brx"
-          echo "BR_XVERSION=${TAG}" >> $GITHUB_ENV
-          getBuildroots "latest" "brs"
-          echo "BR_SVERSION=${TAG}" >> $GITHUB_ENV
           getOffline "files/p3/configs"
+          getLKMs "files/p3/lkms"
+          getTheme "files/p1/boot/grub"
+          getBuildroot "evo" "bre"
+          echo "BRETAG=${BRTAG}" >> $GITHUB_ENV
+          getBuildroot "minimal" "brm"
+          echo "BRMTAG=${BRTAG}" >> $GITHUB_ENV
+
+          # Export Dependencies Version to env
+          echo "ADDONTAG=${ADDONTAG}" >> $GITHUB_ENV
+          echo "MODULETAG=${MODULETAG}" >> $GITHUB_ENV
+          echo "CONFIGTAG=${CONFIGTAG}" >> $GITHUB_ENV
+          echo "PATCHTAG=${PATCHTAG}" >> $GITHUB_ENV
+          echo "CUSTOMTAG=${CUSTOMTAG}" >> $GITHUB_ENV
+          echo "LKMTAG=${LKMTAG}" >> $GITHUB_ENV
+          echo "THEMETAG=${THEMETAG}" >> $GITHUB_ENV
           echo "BUILD_TIME=$(date +'%Y-%m-%d %H:%M')" >> $GITHUB_ENV
 
           echo "OK"
 
-      # Build incremental
-      - name: Build Image X
+       # Build incremental
+      - name: Build Image Evo
+        if: ${{ inputs.evolution }}
         run: |
-          . scripts/func.sh
+          . scripts/functions.sh
 
-          if [ -n "${VERSION}" ]; then
-            # Modify Source File
-            echo "${VERSION}" >VERSION
-            echo "${VERSION}" >files/p1/ARC-VERSION
-            sed 's/^ARC_VERSION=.*/ARC_VERSION="'${VERSION}'"/' -i files/initrd/opt/arc/include/consts.sh
-          fi
+          # Modify Source File
+          ARC_BUILD="$(date +'%y%m%d')"
+          ARC_VERSION="${{ inputs.version }}"
+          ARC_BRANCH="evo"
+          echo "${ARC_BUILD}" > "files/p1/ARC-BUILD"
+          echo "ARC_BUILD=${ARC_BUILD}" >> $GITHUB_ENV
+          echo "${ARC_VERSION}" > "files/p1/ARC-VERSION"
+          echo "ARC_VERSION=${ARC_VERSION}" >> $GITHUB_ENV
+          echo "${ARC_BRANCH}" > "files/p1/ARC-BRANCH"
+          echo "ARC_BRANCH=${ARC_BRANCH}" >> $GITHUB_ENV
 
           echo "Create Arc Image"
           IMAGE_FILE="arc.img"
@@ -136,16 +142,16 @@ jobs:
           sudo mount ${LOOPX}p1 "/tmp/p1"
           sudo mount ${LOOPX}p3 "/tmp/p3"
 
-          [ ! -f "brx/bzImage-arc" ] || [ ! -f "brx/initrd-arc" ] && return 1
+          [ ! -f "bre/bzImage-arc" ] || [ ! -f "bre/initrd-arc" ] && return 1
           
           echo "Repack initrd"
-          cp -f "brx/bzImage-arc" "files/p3/bzImage-arc"
-          repackInitrd "brx/initrd-arc" "files/initrd" "files/p3/initrd-arc"
+          cp -f "bre/bzImage-arc" "files/p3/bzImage-arc"
+          repackInitrd "bre/initrd-arc" "files/initrd" "files/p3/initrd-arc"
 
           echo "Copying files"
-          sudo cp -Rf "files/p1/"* "/tmp/p1"
-          sudo cp -Rf "files/p3/"* "/tmp/p3"
-          sync
+          sudo cp -rf "files/p1/"* "/tmp/p1"
+          sudo cp -rf "files/p3/"* "/tmp/p3"
+          sudo sync
 
           echo "Unmount image file"
           sudo umount "/tmp/p1"
@@ -156,32 +162,55 @@ jobs:
           sudo losetup --detach ${LOOPX}
 
           echo "Image Converter"
-          qemu-img convert ${IMAGE_FILE} -O vmdk -o adapter_type=lsilogic arc-dyn.vmdk
-          qemu-img convert ${IMAGE_FILE} -O vmdk -o adapter_type=lsilogic,subformat=monolithicFlat arc.vmdk
-          qemu-img convert ${IMAGE_FILE} -O vhdx -o subformat=dynamic arc.vhdx
+          qemu-img convert -p -f raw -O vmdk ${IMAGE_FILE} arc-dyn.vmdk
+          qemu-img convert -p -f raw -o subformat=monolithicFlat -O vmdk ${IMAGE_FILE} arc.vmdk
+
+          echo "Create Arc vhd"
+          createvmc "arc.vmc"
+          qemu-img convert -p -f raw -O vpc ${IMAGE_FILE} arc.vhd
 
           echo "Create Arc ova"
           convertova "${IMAGE_FILE}" "arc.ova"
 
-          # Zip update and generate checksum
-          zip -9j update.zip "files/p3/bzImage-arc" "files/p3/initrd-arc" "files/p1/ARC-VERSION" "files/p1/boot/grub/grub.cfg"
-          sha256sum update.zip >checksum.sha256
-
-       # Build incremental
-      - name: Build Image S
+      # Zip image and generate checksum
+      - name: Pack Image Evo
+        if: ${{ inputs.evolution }}
         run: |
-          . scripts/func.sh
-
-          if [ -n "${VERSION}" ]; then
-            VERSION="${VERSION}-s"
-            # Modify Source File
-            echo "${VERSION}" >VERSION
-            echo "${VERSION}" >files/p1/ARC-VERSION
-            sed 's/^ARC_VERSION=.*/ARC_VERSION="'${VERSION}'"/' -i files/initrd/opt/arc/include/consts.sh
+          if [ -n "${{ env.ARC_VERSION }}" ]; then
+            zip -9 "arc-${{ env.ARC_VERSION }}-${{ env.ARC_BRANCH }}.img.zip" arc.img
+            zip -9 "arc-${{ env.ARC_VERSION }}-${{ env.ARC_BRANCH }}.vmdk-dyn.zip" arc-dyn.vmdk
+            zip -9 "arc-${{ env.ARC_VERSION }}-${{ env.ARC_BRANCH }}.vmdk-flat.zip" arc.vmdk arc-flat.vmdk
+            zip -9 "arc-${{ env.ARC_VERSION }}-${{ env.ARC_BRANCH }}.vhd.zip" arc.vhd arc.vmc
+            zip -9 "arc-${{ env.ARC_VERSION }}-${{ env.ARC_BRANCH }}.ova.zip" arc.ova
+            (cd files && zip -r ../update-${{ env.ARC_VERSION }}-${{ env.ARC_BRANCH }}.zip ./p1 ./p3)
+            sha256sum update-${{ env.ARC_VERSION }}-${{ env.ARC_BRANCH }}.zip >"update-${{ env.ARC_VERSION }}-${{ env.ARC_BRANCH }}.hash"
           fi
 
+      # Clean up
+      - name: Clean up
+        if: ${{ inputs.evolution && inputs.minimal }}
+        run: |
+          rm -f arc.img arc-dyn.vmdk arc.vmdk arc-flat.vmdk arc.vhd arc.vmc arc.ova
+
+       # Build incremental
+      - name: Build Image Minimal
+        if: ${{ inputs.minimal }}
+        run: |
+          . scripts/functions.sh
+
+          # Modify Source File
+          ARC_BUILD="$(date +'%y%m%d')"
+          ARC_VERSION="${{ inputs.version }}"
+          ARC_BRANCH="minimal"
+          echo "${ARC_BUILD}" > "files/p1/ARC-BUILD"
+          echo "ARC_BUILD=${ARC_BUILD}" >> $GITHUB_ENV
+          echo "${ARC_VERSION}" > "files/p1/ARC-VERSION"
+          echo "ARC_VERSION=${ARC_VERSION}" >> $GITHUB_ENV
+          echo "${ARC_BRANCH}" > "files/p1/ARC-BRANCH"
+          echo "ARC_BRANCH=${ARC_BRANCH}" >> $GITHUB_ENV
+
           echo "Create Arc Image"
-          IMAGE_FILE="arc-s.img"
+          IMAGE_FILE="arc.img"
           gzip -dc "files/initrd/opt/arc/grub.img.gz" >"${IMAGE_FILE}"
           fdisk -l "${IMAGE_FILE}"
           
@@ -194,16 +223,16 @@ jobs:
           sudo mount ${LOOPX}p1 "/tmp/p1"
           sudo mount ${LOOPX}p3 "/tmp/p3"
 
-          [ ! -f "brs/bzImage-arc" ] || [ ! -f "brs/initrd-arc" ] && return 1
+          [ ! -f "brm/bzImage-arc" ] || [ ! -f "brm/initrd-arc" ] && return 1
           
           echo "Repack initrd"
-          cp -f "brs/bzImage-arc" "files/p3/bzImage-arc"
-          repackInitrd "brs/initrd-arc" "files/initrd" "files/p3/initrd-arc"
+          cp -f "brm/bzImage-arc" "files/p3/bzImage-arc"
+          repackInitrd "brm/initrd-arc" "files/initrd" "files/p3/initrd-arc"
 
           echo "Copying files"
-          sudo cp -Rf "files/p1/"* "/tmp/p1"
-          sudo cp -Rf "files/p3/"* "/tmp/p3"
-          sync
+          sudo cp -rf "files/p1/"* "/tmp/p1"
+          sudo cp -rf "files/p3/"* "/tmp/p3"
+          sudo sync
 
           echo "Unmount image file"
           sudo umount "/tmp/p1"
@@ -214,66 +243,64 @@ jobs:
           sudo losetup --detach ${LOOPX}
 
           echo "Image Converter"
-          qemu-img convert ${IMAGE_FILE} -O vmdk -o adapter_type=lsilogic arc-s-dyn.vmdk
-          qemu-img convert ${IMAGE_FILE} -O vmdk -o adapter_type=lsilogic,subformat=monolithicFlat arc-s.vmdk
+          qemu-img convert -p -f raw -O vmdk ${IMAGE_FILE} arc-dyn.vmdk
+          qemu-img convert -p -f raw -o subformat=monolithicFlat -O vmdk ${IMAGE_FILE} arc.vmdk
+
+          echo "Create Arc vhd"
+          createvmc "arc.vmc"
+          qemu-img convert -p -f raw -O vpc ${IMAGE_FILE} arc.vhd
 
           echo "Create Arc ova"
-          convertova "${IMAGE_FILE}" "arc-s.ova"
-
-          # Zip update and generate checksum
-          zip -9j update-s.zip "files/p3/bzImage-arc" "files/p3/initrd-arc" "files/p1/ARC-VERSION" "files/p1/boot/grub/grub.cfg"
-          sha256sum update-s.zip >checksum-s.sha256
+          convertova "${IMAGE_FILE}" "arc.ova"
 
       # Zip image and generate checksum
-      - name: Pack
+      - name: Pack Image Minimal
+        if: ${{ inputs.minimal }}
         run: |
-          if [ -n "${{ env.VERSION }}" ]; then
-            # XBase
-            zip -9 "arc-${{ env.VERSION }}.img.zip" arc.img
-            zip -9 "arc-${{ env.VERSION }}.vmdk-dyn.zip" arc-dyn.vmdk
-            zip -9 "arc-${{ env.VERSION }}.vmdk-flat.zip" arc.vmdk arc-flat.vmdk
-            zip -9 "arc-${{ env.VERSION }}.vhdx.zip" arc.vhdx
-            zip -9 "arc-${{ env.VERSION }}.ova.zip" arc.ova
-            # SBase
-            zip -9 "arc-${{ env.VERSION }}-s.img.zip" arc-s.img
-            zip -9 "arc-${{ env.VERSION }}-s.vmdk-dyn.zip" arc-s-dyn.vmdk
-            zip -9 "arc-${{ env.VERSION }}-s.vmdk-flat.zip" arc-s.vmdk arc-s-flat.vmdk
-            zip -9 "arc-${{ env.VERSION }}-s.ova.zip" arc-s.ova
+          if [ -n "${{ env.ARC_VERSION }}" ]; then
+            zip -9 "arc-${{ env.ARC_VERSION }}-${{ env.ARC_BRANCH }}.img.zip" arc.img
+            zip -9 "arc-${{ env.ARC_VERSION }}-${{ env.ARC_BRANCH }}.vmdk-dyn.zip" arc-dyn.vmdk
+            zip -9 "arc-${{ env.ARC_VERSION }}-${{ env.ARC_BRANCH }}.vmdk-flat.zip" arc.vmdk arc-flat.vmdk
+            zip -9 "arc-${{ env.ARC_VERSION }}-${{ env.ARC_BRANCH }}.vhd.zip" arc.vhd arc.vmc
+            zip -9 "arc-${{ env.ARC_VERSION }}-${{ env.ARC_BRANCH }}.ova.zip" arc.ova
+            (cd files && zip -r ../update-${{ env.ARC_VERSION }}-${{ env.ARC_BRANCH }}.zip ./p1 ./p3)
+            sha256sum update-${{ env.ARC_VERSION }}-${{ env.ARC_BRANCH }}.zip >"update-${{ env.ARC_VERSION }}-${{ env.ARC_BRANCH }}.hash"
           fi
-          echo "${{ inputs.update_version }}" >check.update
+
 
       # Publish a release if is a tag
       - name: Release
-        if: success() && env.VERSION != ''
+        if: success() && env.ARC_VERSION != ''
         uses: ncipollo/release-action@v1
         with:
-          tag: ${{ env.VERSION }}
+          tag: ${{ env.ARC_VERSION }}
           prerelease: ${{ inputs.prerelease }}
           makeLatest: ${{ inputs.latest }}
           allowUpdates: true
           body: |
-            ### Information:
-            Notice: ${{ inputs.notice }}
-            Release: ${{ env.BUILD_TIME }}
-            
-            - Full Changelog and Arc Patch (Decryption Key) can be found in my Discord.
-            - Version:
-              - without "-s": Latest Buildroot System (More Hardware supported / Hyper-V and XEN (still in testing))
-              - with "-s": Stable Buildroot System (Less Hardware supported / faster Boot)
+            ### Note:
+              - ${{ inputs.notice }}
 
-            ### Versions:
-            Addons: ${{ env.ADDONSTAG }}
-            Configs: ${{ env.CONFIGSTAG }}
-            Modules: ${{ env.MODULESTAG }}
-            Patches: ${{ env.PATCHESTAG }}
-            Custom: ${{ env.CUSTOMTAG }}
-            Theme: ${{ env.THEMETAG }}
-            LKM: ${{ env.LKMTAG }}
-            Buildroot: ${{ env.BR_XVERSION }} | Buildroot S: ${{ env.BR_SVERSION }}
+            ### Information:
+              - Discord Account for Arc Patch needed
+              - Changelog is available in my Discord
+              - Based on VisionZ Evolution Code
+              ${{ inputs.evolution && '- Basesystem Evolution: full features - bigger / slower' || '' }}
+              ${{ inputs.minimal && '- Basesystem Minimal: reduced features - smaller / faster' || '' }}
+
+            ### Dependencies:
+              - Addons: ${{ env.ADDONTAG }}
+              - Modules: ${{ env.MODULETAG }}
+              - Configs: ${{ env.CONFIGTAG }}
+              - Patches: ${{ env.PATCHTAG }}
+              - Custom: ${{ env.CUSTOMTAG }}
+              - LKMs: ${{ env.LKMTAG }}
+              ${{ inputs.evolution && format('- Basesystem Evolution: {0}', env.BRETAG) || '' }}
+              ${{ inputs.minimal && format('- Basesystem Minimal: {0}', env.BRMTAG) || '' }}
+
+            ### Release
+              - ${{ env.BUILD_TIME }}
           artifacts: |
             arc-*.zip
-            update.zip
-            update-s.zip
-            checksum.sha256
-            checksum-s.sha256
-            check.update
+            update-*.zip
+            update-*.hash

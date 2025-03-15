@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2023 AuxXxilium <https://github.com/AuxXxilium> and Ing <https://github.com/wjz304>
+# Copyright (C) 2025 AuxXxilium <https://github.com/AuxXxilium> and Ing <https://github.com/wjz304>
 #
 # This is free software, licensed under the MIT License.
 # See /LICENSE for more information.
@@ -30,6 +30,18 @@ def validate_required_param(ctx, param, value):
     if not value and "file" not in ctx.params and "data" not in ctx.params:
         raise click.MissingParameter(param_decls=[param.name])
     return value
+
+def __fullversion(ver):
+    out = ver
+    arr = ver.split('-')
+    if len(arr) > 0:
+        a = arr[0].split('.')[0] if len(arr[0].split('.')) > 0 else '0'
+        b = arr[0].split('.')[1] if len(arr[0].split('.')) > 1 else '0'
+        c = arr[0].split('.')[2] if len(arr[0].split('.')) > 2 else '0'
+        d = arr[1] if len(arr) > 1 else '00000'
+        e = arr[2] if len(arr) > 2 else '0'
+        out = '{}.{}.{}-{}-{}'.format(a,b,c,d,e)
+    return out
 
 
 @cli.command()
@@ -95,88 +107,6 @@ def makeqr(data, file, location, output):
 
     except:
         pass
-
-@cli.command()
-@click.option("-p", "--platforms", type=str, help="The platforms of Syno.")
-def getmodels(platforms=None):
-    """
-    Get Syno Models.
-    """
-    import json, requests, urllib3
-    from requests.adapters import HTTPAdapter
-    from requests.packages.urllib3.util.retry import Retry # type: ignore
-
-    adapter = HTTPAdapter(max_retries=Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504]))
-    session = requests.Session()
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-    
-    if platforms is not None and platforms != "":
-        PS = platforms.lower().replace(",", " ").split()
-    else:
-        PS = []
-
-    models = []
-    if len(models) == 0:
-        try:
-            req = session.get("https://autoupdate.synology.com/os/v2", timeout=10, verify=False)
-            req.encoding = "utf-8"
-            data = json.loads(req.text)
-
-            for I in data["channel"]["item"]:
-                if not I["title"].startswith("DSM"):
-                    continue
-                for J in I["model"]:
-                    arch = J["mUnique"].split("_")[1]
-                    name = J["mLink"].split("/")[-1].split("_")[1].replace("%2B", "+")
-                    if len(PS) > 0 and arch.lower() not in PS:
-                        continue
-                    if any(name == B["name"] for B in models):
-                        continue
-                    models.append({"name": name, "arch": arch})
-
-            models = sorted(models, key=lambda k: (k["arch"], k["name"]))
-
-        except:
-            pass
-
-    models.sort(key=lambda x: (x["arch"], x["name"]))
-    print(json.dumps(models, indent=4))
-
-@cli.command()
-@click.option("-p", "--platforms", type=str, help="The platforms of Syno.")
-def getmodelsoffline(platforms=None):
-    """
-    Get Syno Models.
-    """
-    import re, json
-    import requests
-    import fcntl, struct
-
-    if platforms is not None and platforms != "":
-        PS = platforms.lower().replace(",", " ").split()
-    else:
-        PS = []
-
-    models = []
-    with open(os.path.join('/mnt/p3/configs', "offline.json")) as user_file:
-        data = json.load(user_file)
-
-    for I in data["channel"]["item"]:
-        if not I["title"].startswith("DSM"):
-            continue
-        for J in I["model"]:
-            arch = J["mUnique"].split("_")[1]
-            name = J["mLink"].split("/")[-1].split("_")[1].replace("%2B", "+")
-            if len(PS) > 0 and arch.lower() not in PS:
-                continue
-            if any(name == B["name"] for B in models):
-                continue
-            models.append({"name": name, "arch": arch})
-
-    models = sorted(models, key=lambda k: (k["arch"], k["name"]))
-    print(json.dumps(models, indent=4))
 
 if __name__ == "__main__":
     cli()

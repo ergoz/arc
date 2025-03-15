@@ -7,6 +7,10 @@
 
 name: Data
 on:
+  release:
+    types:
+      - created
+
   workflow_dispatch:
     inputs:
       push:
@@ -20,6 +24,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@main
+        with:
+          ref: page
 
       - name: Init Env
         run: |
@@ -27,34 +33,86 @@ jobs:
           git config --global user.name "AuxXxilium"
           sudo timedatectl set-timezone "Europe/Berlin"
 
-      - name: Get models
+          sudo apt update
+          sudo apt install -y build-essential libtool pkgconf libzstd-dev liblzma-dev libssl-dev busybox dialog curl xz-utils cpio sed qemu-utils
+
+          YQ=$(command -v yq)
+          if [ -z "${YQ}" ] || ! ${YQ} --version 2>/dev/null | grep -q "v4."; then
+            wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O "${YQ:-"/usr/bin/yq"}" && chmod +x "${YQ:-"/usr/bin/yq"}"
+          fi
+
+      - name: Get Addon Data for Arc
         run: |
-          . scripts/func.sh
-          models="{"
-          WORK_PATH="files/p3"
-          mkdir -p "${WORK_PATH}/configs"
-          getConfigs "${WORK_PATH}/configs"
-          for M in $(find "${WORK_PATH}/configs" -maxdepth 1 -name \*.yml 2>/dev/null | sed 's/.*\///; s/\.yml//'); do
-            models+="\"${M}\":["
-            for V in $(yq eval '.productvers | explode(.) | to_entries | map([.key])[] | .[]' "${WORK_PATH}/configs/${M}.yml" 2>/dev/null | sort -r); do
-              models+="\"${V}\","
-            done
-            models="${models%,}],"
+          REPO="https://github.com/AuxXxilium/arc-addons"
+          PRERELEASE="true"
+
+          TAG=""
+          if [ "${PRERELEASE}" = "true" ]; then
+            TAG="$(curl -skL --connect-timeout 10 "${REPO}/tags" | grep /refs/tags/.*\.zip  | sed -r 's/.*\/refs\/tags\/(.*)\.zip.*$/\1/' | sort -rV | head -1)"
+          else
+            LATESTURL="$(curl -skL --connect-timeout 10 -w %{url_effective} -o /dev/null "${REPO}/releases/latest")"
+            TAG="${LATESTURL##*/}"
+          fi
+          [ "${TAG:0:1}" = "v" ] && TAG="${TAG:1}"
+          rm -f addons.zip
+          STATUS=$(curl -kL --connect-timeout 10 -w "%{http_code}" "${REPO}/releases/download/${TAG}/addons-${TAG}.zip" -o "addons.zip")
+          if [ $? -ne 0 -o ${STATUS:-0} -ne 200 ]; then
+            echo "Download failed"
+            exit 1
+          fi
+          
+          mkdir -p "mnt/p3/addons"
+          unzip addons.zip -d "mnt/p3/addons"
+          for i in $(find "mnt/p3/addons" -type f -name "*.addon"); do
+            if [ -f "${i}" ]; then
+              mkdir -p "mnt/p3/addons/$(basename "${i}" .addon)"
+              tar -xaf "${i}" -C "mnt/p3/addons/$(basename "${i}" .addon)"
+            fi
           done
-          models="${models%,}}"
-          echo "${models}" >docs/models.json
-          rm -rf "${WORK_PATH}/configs"
+          rm -f addons.zip
+
+      - name: Get Config Data for Arc
+        run: |
+          REPO="https://github.com/AuxXxilium/arc-configs"
+          LATESTURL="$(curl -skL --connect-timeout 10 -w %{url_effective} -o /dev/null "${REPO}/releases/latest")"
+          TAG="${LATESTURL##*/}"
+          [ "${TAG:0:1}" = "v" ] && TAG="${TAG:1}"
+          rm -f configs.zip
+          STATUS=$(curl -kL --connect-timeout 10 -w "%{http_code}" "${REPO}/releases/download/${TAG}/configs-${TAG}.zip" -o "configs.zip")
+          if [ $? -ne 0 -o ${STATUS:-0} -ne 200 ]; then
+            echo "Download failed"
+            exit 1
+          fi
+          
+          mkdir -p "mnt/p3/configs"
+          unzip configs.zip -d "mnt/p3/configs"
+          rm -f configs.zip
+
+      - name: Get data
+        run: |
+          pip install -r scripts/requirements.txt
+          python scripts/functions.py getmodels -w "." -j "docs/models.json"
+          python scripts/functions.py getaddons -w "." -j "docs/addons.json"
+          python scripts/functions.py getpats -w "." -j "docs/pats.json"
+
+      - name: Upload to Artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs
+          path: |
+            docs/*.json
+          retention-days: 5
 
       - name: Check and Push
-        if: success() && inputs.push == true
+        if: success() && (inputs.push == true || github.event.action == 'created')
         run: |
             echo "Git push ..."
+            # git checkout main
             git pull
-            status=$(git status -s | grep -E 'docs/models.json' | awk '{printf " %s", $2}')
+            status=$(git status -s | grep -E "docs" | awk '{printf " %s", $2}')
             if [ -n "${status}" ]; then
               git add ${status}
               git commit -m "data: update $(date +%Y-%m-%d" "%H:%M:%S)"
               git push -f
             fi
-
-  
